@@ -9,6 +9,75 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 import os
 import datetime
+import random
+import colorsys
+
+
+class ColorManager:
+    def __init__(self):
+        self.user_colors = {}  # Maps usernames to their assigned colors
+        
+    def rgb_to_hex(self, rgb):
+        """Convert RGB tuple to hex color code"""
+        r, g, b = [int(x * 255) for x in rgb]
+        return f"#{r:02x}{g:02x}{b:02x}"
+        
+    def generate_color(self, username):
+        """Generate a color for a new user"""
+        if username in self.user_colors:
+            return self.user_colors[username]
+            
+        # If it's a new user, generate a color based on existing ones
+        if not self.user_colors:
+            # First user gets a vibrant blue
+            hue = 210 / 360  # Blue hue
+            saturation = 0.8
+            lightness = 0.6
+        else:
+            # Find the largest gap in the hue wheel
+            hues = [self._extract_hue(color) for color in self.user_colors.values()]
+            hues.sort()
+            
+            # Add the first hue at the end to check the gap that wraps around
+            if hues:
+                hues.append(hues[0] + 1.0)
+                
+                max_gap = 0
+                gap_position = 0
+                
+                for i in range(len(hues) - 1):
+                    gap = hues[i+1] - hues[i]
+                    if gap > max_gap:
+                        max_gap = gap
+                        gap_position = i
+                
+                # Place new color in the middle of the largest gap
+                hue = (hues[gap_position] + max_gap / 2) % 1.0
+            else:
+                # This should never happen since we check for empty user_colors above,
+                # but adding as a safety fallback
+                hue = random.random()
+                
+            saturation = 0.7 + random.random() * 0.3  # 70-100% saturation
+            lightness = 0.4 + random.random() * 0.35  # 40-75% lightness
+            
+        # Convert HSL to RGB, then to hex
+        rgb = colorsys.hls_to_rgb(hue, lightness, saturation)
+        hex_color = self.rgb_to_hex(rgb)
+        
+        # Store the color for this user
+        self.user_colors[username] = hex_color
+        return hex_color
+        
+    def _extract_hue(self, hex_color):
+        """Extract the hue value from a hex color"""
+        # Convert hex to RGB
+        hex_color = hex_color.lstrip('#')
+        r, g, b = [int(hex_color[i:i+2], 16) / 255 for i in (0, 2, 4)]
+        
+        # Convert RGB to HSL and return the hue
+        h, l, s = colorsys.rgb_to_hls(r, g, b)
+        return h
 
 
 class SecureChat:
@@ -20,6 +89,14 @@ class SecureChat:
 
         # Setup encryption using the password
         self.setup_encryption(password)
+        
+        # Initialize color manager
+        self.color_manager = ColorManager()
+        # Add our own username with a nice color
+        self.my_color = self.color_manager.generate_color(self.username)
+        
+        # Define timestamp color
+        self.timestamp_color = "#888888"  # Light gray
 
         # Setup UI
         self.setup_ui()
@@ -59,6 +136,10 @@ class SecureChat:
             self.chat_frame, wrap=tk.WORD, state=tk.DISABLED
         )
         self.chat_history.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        
+        # Configure tags for text colors
+        self.chat_history.tag_configure("timestamp", foreground=self.timestamp_color)
+        self.chat_history.tag_configure("myname", foreground=self.my_color)
 
         # Message input area
         self.input_frame = tk.Frame(self.root)
@@ -103,21 +184,100 @@ class SecureChat:
 
             # Update status
             self.update_status(f"Connected! Listening on port {self.port}")
-            self.update_chat_history(
-                f"[{timestamp}] System: Chat started on port {self.port}. Share this port number with your friend."
+            self.update_chat_history_system(
+                f"Chat started on port {self.port}. Share this port number with your friend.",
+                timestamp
+            )
+            
+            # Display a self-join message to show our own color in the system messages
+            self.update_chat_history_system(
+                f"{self.username} has joined the chat.",
+                timestamp,
+                highlight_username=self.username
             )
         except OSError as e:
             self.update_status(f"Error: Could not bind to port {self.port}. {str(e)}")
-            self.update_chat_history(
-                f"[{timestamp}] System: Failed to start chat. Port {self.port} is unavailable."
+            self.update_chat_history_system(
+                f"Failed to start chat. Port {self.port} is unavailable.",
+                timestamp
             )
 
     def update_status(self, status):
         self.status_var.set(status)
 
-    def update_chat_history(self, message):
+    def update_chat_history(self, message, timestamp, sender=None, is_system=False):
         self.chat_history.config(state=tk.NORMAL)
-        self.chat_history.insert(tk.END, message + "\n")
+        
+        # Insert timestamp with timestamp tag
+        timestamp_text = f"[{timestamp}] "
+        self.chat_history.insert(tk.END, timestamp_text, "timestamp")
+        
+        if is_system:
+            # Handle system message
+            self.chat_history.insert(tk.END, "System: " + message + "\n")
+        else:
+            # Handle user message with colored username
+            if sender == self.username:
+                # Our own messages
+                self.chat_history.insert(tk.END, "You: ", "myname")
+            else:
+                # Get or generate color for this user
+                user_color = self.color_manager.generate_color(sender)
+                # Create a tag for this user if it doesn't exist
+                tag_name = f"user_{sender}"
+                self.chat_history.tag_configure(tag_name, foreground=user_color)
+                self.chat_history.insert(tk.END, f"{sender}: ", tag_name)
+            
+            # Insert the actual message content
+            self.chat_history.insert(tk.END, message + "\n")
+        
+        self.chat_history.see(tk.END)
+        self.chat_history.config(state=tk.DISABLED)
+
+    def update_chat_history_system(self, message, timestamp, highlight_username=None):
+        """Convenience method for system messages, with optional username highlighting"""
+        self.chat_history.config(state=tk.NORMAL)
+        
+        # Insert timestamp with timestamp tag
+        timestamp_text = f"[{timestamp}] "
+        self.chat_history.insert(tk.END, timestamp_text, "timestamp")
+        
+        # Insert "System: " prefix with a special system tag
+        system_tag = "system_text"
+        if not system_tag in self.chat_history.tag_names():
+            self.chat_history.tag_configure(system_tag, foreground="#009688")  # Teal color for system
+        self.chat_history.insert(tk.END, "System: ", system_tag)
+        
+        # If there's a username to highlight
+        if highlight_username:
+            # Split the message to isolate the username
+            parts = message.split(highlight_username, 1)
+            
+            # Insert first part of message
+            if parts[0]:
+                self.chat_history.insert(tk.END, parts[0])
+            
+            # Insert username with color
+            if highlight_username == self.username:
+                # Our own username
+                self.chat_history.insert(tk.END, highlight_username, "myname")
+            else:
+                # Get or generate color for this user
+                user_color = self.color_manager.generate_color(highlight_username)
+                # Create a tag for this user if it doesn't exist
+                tag_name = f"user_{highlight_username}"
+                self.chat_history.tag_configure(tag_name, foreground=user_color)
+                self.chat_history.insert(tk.END, highlight_username, tag_name)
+            
+            # Insert rest of message
+            if len(parts) > 1 and parts[1]:
+                self.chat_history.insert(tk.END, parts[1])
+        else:
+            # Insert regular system message
+            self.chat_history.insert(tk.END, message)
+        
+        # Add newline
+        self.chat_history.insert(tk.END, "\n")
         self.chat_history.see(tk.END)
         self.chat_history.config(state=tk.DISABLED)
 
@@ -151,7 +311,7 @@ class SecureChat:
             )
 
             # Update local chat history
-            self.update_chat_history(f"[{timestamp}] You: {message}")
+            self.update_chat_history(message, timestamp, self.username)
 
     def select_file(self):
         # Open file dialog
@@ -166,8 +326,9 @@ class SecureChat:
 
         # Inform the user
         timestamp = self.get_timestamp()
-        self.update_chat_history(
-            f"[{timestamp}] System: Sending file '{file_name}' ({file_size} bytes)"
+        self.update_chat_history_system(
+            f"Sending file '{file_name}' ({file_size} bytes)",
+            timestamp
         )
 
         # Read file contents
@@ -202,7 +363,7 @@ class SecureChat:
             )
 
         # Update local chat history
-        self.update_chat_history(f"[{timestamp}] You: Sent file '{file_name}'")
+        self.update_chat_history(f"Sent file '{file_name}'", timestamp, self.username)
 
     def save_received_file(self, file_name):
         # Get file info
@@ -230,13 +391,15 @@ class SecureChat:
                     file.write(binary_data)
 
                 timestamp = self.get_timestamp()
-                self.update_chat_history(
-                    f"[{timestamp}] System: File '{file_name}' from {sender} saved to {save_path}"
+                self.update_chat_history_system(
+                    f"File '{file_name}' from {sender} saved to {save_path}",
+                    timestamp
                 )
             except Exception as e:
                 timestamp = self.get_timestamp()
-                self.update_chat_history(
-                    f"[{timestamp}] System: Error saving file: {str(e)}"
+                self.update_chat_history_system(
+                    f"Error saving file: {str(e)}",
+                    timestamp
                 )
 
         # Clean up
@@ -260,15 +423,19 @@ class SecureChat:
                         and message["username"] != self.username
                     ):
                         self.update_chat_history(
-                            f"[{message['timestamp']}] {message['username']}: {message['content']}"
+                            message["content"],
+                            message["timestamp"],
+                            message["username"]
                         )
 
                     elif (
                         message["type"] == "join"
                         and message["username"] != self.username
                     ):
-                        self.update_chat_history(
-                            f"[{message['timestamp']}] System: {message['username']} has joined the chat."
+                        self.update_chat_history_system(
+                            f"{message['username']} has joined the chat.",
+                            message["timestamp"],
+                            highlight_username=message['username']
                         )
 
                     # Handle file info message
@@ -284,8 +451,9 @@ class SecureChat:
                             "total_chunks": 0,
                             "sender": message["username"],
                         }
-                        self.update_chat_history(
-                            f"[{message['timestamp']}] System: {message['username']} is sending file '{file_name}' ({file_size} bytes)"
+                        self.update_chat_history_system(
+                            f"{message['username']} is sending file '{file_name}' ({file_size} bytes)",
+                            message["timestamp"]
                         )
 
                     # Handle file chunk message
@@ -309,6 +477,16 @@ class SecureChat:
                                 == self.incoming_files[file_name]["total_chunks"]
                             ):
                                 self.save_received_file(file_name)
+                                
+                    # Handle leave message
+                    elif (
+                        message["type"] == "leave"
+                        and message["username"] != self.username
+                    ):
+                        self.update_chat_history_system(
+                            f"{message['username']} has left the chat.",
+                            message["timestamp"]
+                        )
 
                 except Exception as e:
                     # Failed to decrypt - wrong password or invalid message
